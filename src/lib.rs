@@ -7,33 +7,37 @@ struct Element {
 
 type ParseResult<'a, Output> = Result<(&'a str, Output), &'a str>;
 
-
 trait Parser<'a, Output> {
     fn parse(&self, input: &'a str) -> ParseResult<'a, Output>;
 
-    fn map<F, NewOutput>(self, map_fn: F) -> impl Parser<'a, NewOutput>
+    fn map<F, NewOutput>(self, map_fn: F) -> BoxedParser<'a, NewOutput>
     where
-        Self: Sized,
-        F: Fn(Output) -> NewOutput,
+        Self: Sized + 'a,
+        Output: 'a,
+        NewOutput: 'a,
+        F: Fn(Output) -> NewOutput + 'a,
     {
-        map(self, map_fn)
+        BoxedParser::new(map(self, map_fn))
     }
 
-    fn pred<F>(self, predicate_fn: F) -> impl Parser<'a, Output>
+    fn pred<F>(self, predicate_fn: F) -> BoxedParser<'a, Output>
     where
-        Self: Sized,
-        F: Fn(&Output) -> bool,
+        Self: Sized + 'a,
+        Output: 'a,
+        F: Fn(&Output) -> bool + 'a,
     {
-        pred(self, predicate_fn)
+        BoxedParser::new(pred(self, predicate_fn))
     }
 
-    fn and_then<F, NextParser, NewOutput>(self, f: F) -> impl Parser<'a, NewOutput>
+    fn and_then<F, NextParser, NewOutput>(self, f: F) -> BoxedParser<'a, NewOutput>
     where
-        Self: Sized,
-        NextParser: Parser<'a, NewOutput>,
-        F: Fn(Output) -> NextParser,
+        Self: Sized + 'a,
+        NewOutput: 'a,
+        Output: 'a,
+        NextParser: Parser<'a, NewOutput> + 'a,
+        F: Fn(Output) -> NextParser + 'a,
     {
-        and_then(self, f)
+        BoxedParser::new(and_then(self, f))
     }
 }
 
@@ -43,6 +47,27 @@ where
 {
     fn parse(&self, input: &'a str) -> ParseResult<'a, Output> {
         self(input)
+    }
+}
+
+struct BoxedParser<'a, Output> {
+    parser: Box<dyn Parser<'a, Output> + 'a>,
+}
+
+impl<'a, Output> BoxedParser<'a, Output> {
+    fn new<P>(parser: P) -> Self
+    where
+        P: Parser<'a, Output> + 'a,
+    {
+        Self {
+            parser: Box::new(parser),
+        }
+    }
+}
+
+impl<'a, Output> Parser<'a, Output> for BoxedParser<'a, Output> {
+    fn parse(&self, input: &'a str) -> ParseResult<'a, Output> {
+        self.parser.parse(input)
     }
 }
 
