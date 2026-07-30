@@ -7,6 +7,7 @@ struct Element {
 
 type ParseResult<'a, Output> = Result<(&'a str, Output), &'a str>;
 
+
 trait Parser<'a, Output> {
     fn parse(&self, input: &'a str) -> ParseResult<'a, Output>;
 
@@ -16,6 +17,23 @@ trait Parser<'a, Output> {
         F: Fn(Output) -> NewOutput,
     {
         map(self, map_fn)
+    }
+
+    fn pred<F>(self, predicate_fn: F) -> impl Parser<'a, Output>
+    where
+        Self: Sized,
+        F: Fn(&Output) -> bool,
+    {
+        pred(self, predicate_fn)
+    }
+
+    fn and_then<F, NextParser, NewOutput>(self, f: F) -> impl Parser<'a, NewOutput>
+    where
+        Self: Sized,
+        NextParser: Parser<'a, NewOutput>,
+        F: Fn(Output) -> NextParser,
+    {
+        and_then(self, f)
     }
 }
 
@@ -156,6 +174,18 @@ where
     }
 }
 
+fn and_then<'a, P, F, A, B, NextP>(parser: P, f: F) -> impl Parser<'a, B>
+where
+    P: Parser<'a, A>,
+    NextP: Parser<'a, B>,
+    F: Fn(A) -> NextP,
+{
+    move |input| {
+        let (next_input, result) = parser.parse(input)?;
+        f(result).parse(next_input)
+    }
+}
+
 fn whitespace_char<'a>() -> impl Parser<'a, char> {
     pred(any_char, |c| c.is_whitespace())
 }
@@ -168,11 +198,22 @@ fn space0<'a>() -> impl Parser<'a, Vec<char>> {
     zero_or_more(whitespace_char())
 }
 
+fn either<'a, P1, P2, A>(parser1: P1, parser2: P2) -> impl Parser<'a, A>
+where
+    P1: Parser<'a, A>,
+    P2: Parser<'a, A>,
+{
+    move |input| match parser1.parse(input) {
+        ok @ Ok(_) => ok,
+        Err(_) => parser2.parse(input),
+    }
+}
+
 fn quoted_string<'a>() -> impl Parser<'a, String> {
     right(
         match_literal("\""),
         left(
-            zero_or_more(pred(any_char, |&c| c != '"')),
+            zero_or_more(any_char.pred(|&c| c != '"')),
             match_literal("\""),
         ),
     )
@@ -192,14 +233,38 @@ fn element_start<'a>() -> impl Parser<'a, (String, Vec<(String, String)>)> {
 }
 
 fn single_element<'a>() -> impl Parser<'a, Element> {
-    map(
-        left(element_start(), match_literal("/>")),
-        |(name, attributes)| Element {
-            name,
-            attributes,
-            children: vec![],
-        },
-    )
+    left(element_start(), match_literal("/>")).map(|(name, attributes)| Element {
+        name,
+        attributes,
+        children: vec![],
+    })
+}
+
+fn open_element<'a>() -> impl Parser<'a, Element> {
+    left(element_start(), match_literal(">")).map(|(name, attributes)| Element {
+        name,
+        attributes,
+        children: vec![],
+    })
+}
+
+fn close_element<'a>(expected_name: String) -> impl Parser<'a, String> {
+    right(match_literal("</"), left(identifier, match_literal(">")))
+        .pred(move |name| name == &expected_name)
+}
+
+fn parent_element<'a>() -> impl Parser<'a, Element> {
+    open_element().and_then(|el| {
+        left(zero_or_more(element()), close_element(el.name.clone())).map(move |children| {
+            let mut el = el.clone();
+            el.children = children;
+            el
+        })
+    })
+}
+
+fn element<'a>() -> impl Parser<'a, Element> {
+    either(single_element(), parent_element())
 }
 
 #[test]
